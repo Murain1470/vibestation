@@ -1,9 +1,47 @@
 import { create } from 'zustand';
 import { saveSnapshot, getSnapshots, saveProject, getProjects, deleteProject } from './db';
 
-export function sendPreviewToSW(html, assets, keys) {
-  const sw = navigator.serviceWorker?.controller;
-  if (sw) sw.postMessage({ type: 'SET_PREVIEW', data: { html, assets: assets || {}, keys: keys || {} } });
+// Send HTML to SW and wait for confirmation via MessageChannel
+export function sendHTMLToSW(html) {
+  return new Promise((resolve) => {
+    const sw = navigator.serviceWorker?.controller;
+    if (!sw) { resolve(); return; }
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => resolve();
+    sw.postMessage({ type: 'SET_HTML', html }, [channel.port2]);
+    setTimeout(resolve, 800); // fallback
+  });
+}
+
+// Build final HTML with keys and assets injected
+export function buildPreviewHTML(html, assets, keys) {
+  if (!html) return html;
+  let injection = '<script>\n';
+
+  // Inject keys
+  const hasKeys = keys && Object.values(keys).some(v => v && String(v).trim());
+  if (hasKeys) {
+    injection += 'window.__VS_KEYS__ = ' + JSON.stringify(keys) + ';\n';
+  }
+
+  // Inject asset map
+  if (assets && Object.keys(assets).length > 0) {
+    injection += `(function(){
+var map = ${JSON.stringify(assets)};
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('[src]').forEach(function(el){
+    var v = el.getAttribute('src'); if (v && map[v]) el.setAttribute('src', map[v]);
+  });
+});
+})();\n`;
+  }
+
+  injection += '<\/script>';
+
+  if (html.includes('</head>')) {
+    return html.replace('</head>', injection + '</head>');
+  }
+  return injection + html;
 }
 
 export const useStore = create((set, get) => ({
