@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { useStore, sendHTMLToSW, buildPreviewHTML } from './store';
+import { useStore, sendAssetsToSW } from './store';
 import Home from './Home';
 import AssetSwapper, { extractAssets } from './AssetSwapper';
-import { loadKeys } from './Settings';
 import './App.css';
 
 const PREVIEW_URL = '/preview/';
@@ -52,10 +51,9 @@ export default function App() {
         const html = decodeURIComponent(atob(encoded));
         setCode(html);
         const interval = setInterval(() => {
-          if (navigator.serviceWorker?.controller) {
-            sendHTMLToSW(buildPreviewHTML(html, {}, loadKeys())).then(() => {
-              reloadPreview();
-            });
+          const sw = navigator.serviceWorker?.controller;
+          if (sw) {
+            sw.postMessage({ type: 'SET_HTML', html });
             clearInterval(interval);
             setView('editor');
           }
@@ -70,32 +68,21 @@ export default function App() {
     }
   };
 
-  const sendAndReload = async (html, assetMap, keys) => {
-    const finalHTML = buildPreviewHTML(html, assetMap, keys);
-    await sendHTMLToSW(finalHTML);
-    reloadPreview();
-  };
-
   const handleOpenProject = async (id) => {
     await openProject(id);
     setView('editor');
     setEditorOpen(true);
     setFullscreen(false);
     setAssets({});
-    setTimeout(async () => {
-      const { code: newCode } = useStore.getState();
-      if (newCode) await sendAndReload(newCode, {}, loadKeys());
-    }, 100);
+    setTimeout(reloadPreview, 200);
   };
 
   const handleSync = async () => {
     setSyncing(true);
-    const keys = loadKeys();
-    const finalHTML = buildPreviewHTML(code, assets, keys);
-    await sendHTMLToSW(finalHTML);
+    sendAssetsToSW(assets);
     await sync();
-    reloadPreview();
     setTimeout(async () => {
+      reloadPreview();
       setSyncing(false);
       if (iframeRef.current && currentProjectId) {
         try {
@@ -104,7 +91,7 @@ export default function App() {
           updateProjectThumbnail(currentProjectId, canvas.toDataURL('image/jpeg', 0.6));
         } catch (_) {}
       }
-    }, 600);
+    }, 500);
   };
 
   const handlePaste = async () => {
@@ -123,11 +110,10 @@ export default function App() {
     }
   };
 
-  const handleSlider = async (e) => {
+  const handleSlider = (e) => {
     const idx = parseInt(e.target.value);
     jumpToSnapshot(idx);
-    const snap = useStore.getState().snapshots[idx];
-    if (snap) await sendAndReload(snap.html, assets, loadKeys());
+    setTimeout(reloadPreview, 50);
   };
 
   const toggleEruda = () => {
@@ -167,6 +153,7 @@ export default function App() {
 
   const handleAssetsChange = (newAssets) => {
     setAssets(newAssets);
+    sendAssetsToSW(newAssets);
   };
 
   const snapshotCount = snapshots.length;
