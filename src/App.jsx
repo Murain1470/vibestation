@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useStore, sendPreviewToSW } from './store';
+import { useStore, sendHTMLToSW, buildPreviewHTML } from './store';
 import Home from './Home';
 import AssetSwapper, { extractAssets } from './AssetSwapper';
 import { loadKeys } from './Settings';
@@ -52,9 +52,10 @@ export default function App() {
         const html = decodeURIComponent(atob(encoded));
         setCode(html);
         const interval = setInterval(() => {
-          const sw = navigator.serviceWorker?.controller;
-          if (sw) {
-            sw.postMessage({ type: 'SET_HTML', html });
+          if (navigator.serviceWorker?.controller) {
+            sendHTMLToSW(buildPreviewHTML(html, {}, loadKeys())).then(() => {
+              reloadPreview();
+            });
             clearInterval(interval);
             setView('editor');
           }
@@ -69,6 +70,12 @@ export default function App() {
     }
   };
 
+  const sendAndReload = async (html, assetMap, keys) => {
+    const finalHTML = buildPreviewHTML(html, assetMap, keys);
+    await sendHTMLToSW(finalHTML);
+    reloadPreview();
+  };
+
   const handleOpenProject = async (id) => {
     await openProject(id);
     setView('editor');
@@ -77,40 +84,17 @@ export default function App() {
     setAssets({});
     setTimeout(async () => {
       const { code: newCode } = useStore.getState();
-      if (!newCode) return;
-      const keys = loadKeys();
-      await new Promise((resolve) => {
-        const sw = navigator.serviceWorker?.controller;
-        if (!sw) { resolve(); return; }
-        const channel = new MessageChannel();
-        channel.port1.onmessage = () => resolve();
-        sw.postMessage({ type: 'SET_PREVIEW', data: { html: newCode, assets: {}, keys } }, [channel.port2]);
-        setTimeout(resolve, 1000);
-      });
-      reloadPreview();
+      if (newCode) await sendAndReload(newCode, {}, loadKeys());
     }, 100);
   };
 
   const handleSync = async () => {
     setSyncing(true);
     const keys = loadKeys();
-
-    // Use MessageChannel to wait for SW to confirm receipt before reloading iframe
-    await new Promise((resolve) => {
-      const sw = navigator.serviceWorker?.controller;
-      if (!sw) { resolve(); return; }
-      const channel = new MessageChannel();
-      channel.port1.onmessage = () => resolve();
-      sw.postMessage(
-        { type: 'SET_PREVIEW', data: { html: code, assets, keys } },
-        [channel.port2]
-      );
-      setTimeout(resolve, 1000); // fallback in case SW doesn't reply
-    });
-
+    const finalHTML = buildPreviewHTML(code, assets, keys);
+    await sendHTMLToSW(finalHTML);
     await sync();
     reloadPreview();
-
     setTimeout(async () => {
       setSyncing(false);
       if (iframeRef.current && currentProjectId) {
@@ -143,17 +127,7 @@ export default function App() {
     const idx = parseInt(e.target.value);
     jumpToSnapshot(idx);
     const snap = useStore.getState().snapshots[idx];
-    if (!snap) return;
-    const keys = loadKeys();
-    await new Promise((resolve) => {
-      const sw = navigator.serviceWorker?.controller;
-      if (!sw) { resolve(); return; }
-      const channel = new MessageChannel();
-      channel.port1.onmessage = () => resolve();
-      sw.postMessage({ type: 'SET_PREVIEW', data: { html: snap.html, assets, keys } }, [channel.port2]);
-      setTimeout(resolve, 1000);
-    });
-    reloadPreview();
+    if (snap) await sendAndReload(snap.html, assets, loadKeys());
   };
 
   const toggleEruda = () => {
@@ -193,7 +167,6 @@ export default function App() {
 
   const handleAssetsChange = (newAssets) => {
     setAssets(newAssets);
-    sendAssetsToSW(newAssets);
   };
 
   const snapshotCount = snapshots.length;
@@ -300,13 +273,12 @@ export default function App() {
             <button
               className={"btn-toolbar" + (assetOpen ? ' active' : '')}
               onClick={() => setAssetOpen(!assetOpen)}
-              title="素材映射"
             >
               {'素材' + (mappedCount > 0 ? ' ' + mappedCount + '/' + assetCount : ' ' + assetCount)}
             </button>
           )}
 
-          <button className="btn-toolbar" onClick={handleShare} title="分享連結">分享</button>
+          <button className="btn-toolbar" onClick={handleShare}>分享</button>
           <button
             className="btn-toolbar"
             onClick={() => {
@@ -319,7 +291,6 @@ export default function App() {
                 document.exitFullscreen();
               }
             }}
-            title="全螢幕預覽"
           >
             全螢幕
           </button>
