@@ -1,47 +1,14 @@
 import { create } from 'zustand';
 import { saveSnapshot, getSnapshots, saveProject, getProjects, deleteProject } from './db';
 
-// Send HTML to SW and wait for confirmation via MessageChannel
-export function sendHTMLToSW(html) {
-  return new Promise((resolve) => {
-    const sw = navigator.serviceWorker?.controller;
-    if (!sw) { resolve(); return; }
-    const channel = new MessageChannel();
-    channel.port1.onmessage = () => resolve();
-    sw.postMessage({ type: 'SET_HTML', html }, [channel.port2]);
-    setTimeout(resolve, 800); // fallback
-  });
+function sendToSW(html) {
+  const sw = navigator.serviceWorker?.controller;
+  if (sw) sw.postMessage({ type: 'SET_HTML', html });
 }
 
-// Build final HTML with keys and assets injected
-export function buildPreviewHTML(html, assets, keys) {
-  if (!html) return html;
-  let injection = '<script>\n';
-
-  // Inject keys
-  const hasKeys = keys && Object.values(keys).some(v => v && String(v).trim());
-  if (hasKeys) {
-    injection += 'window.__VS_KEYS__ = ' + JSON.stringify(keys) + ';\n';
-  }
-
-  // Inject asset map
-  if (assets && Object.keys(assets).length > 0) {
-    injection += `(function(){
-var map = ${JSON.stringify(assets)};
-document.addEventListener('DOMContentLoaded', function() {
-  document.querySelectorAll('[src]').forEach(function(el){
-    var v = el.getAttribute('src'); if (v && map[v]) el.setAttribute('src', map[v]);
-  });
-});
-})();\n`;
-  }
-
-  injection += '<\/script>';
-
-  if (html.includes('</head>')) {
-    return html.replace('</head>', injection + '</head>');
-  }
-  return injection + html;
+export function sendAssetsToSW(assets) {
+  const sw = navigator.serviceWorker?.controller;
+  if (sw) sw.postMessage({ type: 'SET_ASSETS', assets });
 }
 
 export const useStore = create((set, get) => ({
@@ -78,6 +45,7 @@ export const useStore = create((set, get) => ({
     const idx = snaps.length - 1;
     const code = snaps.length > 0 ? snaps[idx].html : '';
     set({ snapshots: snaps, currentSnapshotIndex: idx, code });
+    if (code) sendToSW(code);
   },
 
   removeProject: async (id) => {
@@ -104,11 +72,12 @@ export const useStore = create((set, get) => ({
     const { code, currentProjectId, snapshots } = get();
     if (!code.trim() || !currentProjectId) return;
     const last = snapshots[snapshots.length - 1];
-    if (last && last.html === code) return;
+    if (last && last.html === code) { sendToSW(code); return; }
     const id = await saveSnapshot(currentProjectId, code);
     const snap = { id, projectId: currentProjectId, html: code, createdAt: Date.now() };
     const newSnaps = [...snapshots, snap];
     set({ snapshots: newSnaps, currentSnapshotIndex: newSnaps.length - 1 });
+    sendToSW(code);
     const { projects } = get();
     const proj = projects.find(p => p.id === currentProjectId);
     if (proj) await saveProject({ ...proj, updatedAt: Date.now() });
@@ -117,6 +86,8 @@ export const useStore = create((set, get) => ({
   jumpToSnapshot: (index) => {
     const { snapshots } = get();
     if (index < 0 || index >= snapshots.length) return;
-    set({ currentSnapshotIndex: index, code: snapshots[index].html });
+    const html = snapshots[index].html;
+    set({ currentSnapshotIndex: index, code: html });
+    sendToSW(html);
   },
 }));
